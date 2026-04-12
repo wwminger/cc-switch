@@ -927,6 +927,47 @@ base_url = "http://localhost:8080"
             );
         });
     }
+
+    #[test]
+    #[serial]
+    fn update_opencode_provider_recreates_deleted_live_config() {
+        with_test_home(|state, _| {
+            let provider = opencode_provider("recreate-test");
+
+            ProviderService::add(state, AppType::OpenCode, provider.clone(), true)
+                .expect("add opencode provider to live");
+
+            let live_providers =
+                crate::opencode_config::get_providers().expect("read opencode providers");
+            assert!(
+                live_providers.contains_key(&provider.id),
+                "provider should exist in live config after add"
+            );
+
+            let config_path = crate::opencode_config::get_opencode_config_path();
+            assert!(config_path.exists(), "opencode.json should exist before deletion");
+            std::fs::remove_file(&config_path).expect("delete opencode.json");
+            assert!(!config_path.exists(), "opencode.json should be deleted");
+
+            let mut updated = provider.clone();
+            updated.settings_config["options"]["apiKey"] = Value::String("updated-key".to_string());
+            ProviderService::update(state, AppType::OpenCode, None, updated)
+                .expect("update opencode provider");
+
+            assert!(config_path.exists(), "opencode.json should be recreated after update");
+            let live_providers_after =
+                crate::opencode_config::get_providers().expect("read opencode providers after update");
+            assert!(
+                live_providers_after.contains_key(&provider.id),
+                "provider should exist in recreated live config"
+            );
+            assert_eq!(
+                live_providers_after[&provider.id]["options"]["apiKey"],
+                Value::String("updated-key".to_string()),
+                "provider in live config should have updated values"
+            );
+        });
+    }
 }
 
 impl ProviderService {
@@ -1166,6 +1207,10 @@ impl ProviderService {
                 }
                 return Ok(true);
             }
+            let was_previously_managed = existing_provider
+                .as_ref()
+                .and_then(Self::provider_live_config_managed)
+                .unwrap_or(false);
             let live_config_managed = Self::check_live_config_exists(
                 &app_type,
                 &provider.id,
@@ -1175,13 +1220,19 @@ impl ProviderService {
                         .and_then(Self::provider_live_config_managed)
                 }),
             )?;
-            Self::set_provider_live_config_managed(&mut provider, live_config_managed);
+
+            // If the provider was previously managed in live config but the config file
+            // was deleted externally (e.g. user deleted opencode.json), we should still
+            // write to live config to recreate the file.
+            let should_write_to_live = live_config_managed || was_previously_managed;
+
+            Self::set_provider_live_config_managed(&mut provider, should_write_to_live);
 
             // Save to database after live-config presence is resolved so parse errors
             // do not report failure after already mutating DB state.
             state.db.save_provider(app_type.as_str(), &provider)?;
 
-            if !live_config_managed {
+            if !should_write_to_live {
                 return Ok(true);
             }
             write_live_with_common_config(state.db.as_ref(), &app_type, &provider)?;
