@@ -96,7 +96,7 @@ impl OmoService {
         let content = std::fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
         let cleaned = Self::strip_jsonc_comments(&content);
         let parsed: Value = serde_json::from_str(&cleaned)
-            .map_err(|e| AppError::Config(format!("Failed to parse oh-my-opencode config: {e}")))?;
+            .map_err(|e| AppError::Config(format!("Failed to parse oh-my-openagent config: {e}")))?;
         parsed
             .as_object()
             .cloned()
